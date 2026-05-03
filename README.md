@@ -129,6 +129,12 @@ Learn more
 ### Search
 ![Search demo](gifs/search.gif)
 
+### Fetching JSON and cache working
+
+Running `python go2web.py -u https://jsonplaceholder.typicode.com/posts/1` twice shows the cache behavior:
+- first run fetches the response from the network and pretty-prints JSON
+- second run serves the same response from `cache.json`
+
 ## Implementation Details
 
 The application is implemented in Python and uses:
