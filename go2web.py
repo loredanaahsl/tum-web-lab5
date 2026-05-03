@@ -5,7 +5,7 @@ import re
 import socket
 import ssl
 from html import unescape
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -168,6 +168,20 @@ def build_search_url(search_terms: list[str]) -> str:
     query = quote_plus(" ".join(search_terms))
     return f"https://html.duckduckgo.com/html/?q={query}"
 
+def normalize_search_result_url(url: str) -> str:
+    if url.startswith("//"):
+        url = f"https:{url}"
+
+    parsed = urlparse(url)
+
+    if "duckduckgo.com" in parsed.netloc and parsed.path == "/l/":
+        params = parse_qs(parsed.query)
+        real_urls = params.get("uddg")
+        if real_urls:
+            return unescape(real_urls[0])
+
+    return url
+
 
 def extract_search_results(html: str, max_results: int = 10) -> list[tuple[str, str]]:
     results: list[tuple[str, str]] = []
@@ -178,7 +192,7 @@ def extract_search_results(html: str, max_results: int = 10) -> list[tuple[str, 
     )
 
     for match in pattern.finditer(html):
-        url = unescape(match.group(1)).strip()
+        url = normalize_search_result_url(unescape(match.group(1)).strip())
         title_html = match.group(2).strip()
         title = html_to_text(title_html)
 
