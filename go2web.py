@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import re
 import socket
 import ssl
+from html import unescape
 from urllib.parse import urlparse
 
 
@@ -24,10 +26,7 @@ def parse_url(url: str) -> tuple[str, str, int, str]:
     if not host:
         raise ValueError("Invalid URL")
 
-    if scheme == "https":
-        port = parsed.port or 443
-    else:
-        port = parsed.port or 80
+    port = parsed.port or (443 if scheme == "https" else 80)
 
     path = parsed.path or "/"
     if parsed.query:
@@ -69,13 +68,33 @@ def make_http_request(url: str) -> str:
     return raw_response.decode("utf-8", errors="replace")
 
 
+def split_headers_and_body(response: str) -> tuple[str, str]:
+    parts = response.split("\r\n\r\n", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return "", response
+
+
+def html_to_text(html: str) -> str:
+    html = re.sub(r"(?is)<script.*?>.*?</script>", "", html)
+    html = re.sub(r"(?is)<style.*?>.*?</style>", "", html)
+    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+    html = re.sub(r"(?i)</p>", "\n", html)
+    html = re.sub(r"(?i)</div>", "\n", html)
+    html = re.sub(r"<[^>]+>", "", html)
+    html = unescape(html)
+    html = re.sub(r"\n\s*\n+", "\n\n", html)
+    return html.strip()
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
     if args.url:
         response = make_http_request(args.url)
-        print(response)
+        _, body = split_headers_and_body(response)
+        print(html_to_text(body))
         return
 
     if args.search:
