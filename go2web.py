@@ -5,16 +5,25 @@ import re
 import socket
 import ssl
 from html import unescape
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="go2web",
-        description="Simple CLI HTTP client over TCP sockets"
+        description="Simple CLI HTTP client over TCP sockets",
     )
-    parser.add_argument("-u", "--url", help="Make an HTTP request to the specified URL")
-    parser.add_argument("-s", "--search", nargs="+", help="Search the term and print top results")
+    parser.add_argument(
+        "-u",
+        "--url",
+        help="Make an HTTP request to the specified URL",
+    )
+    parser.add_argument(
+        "-s",
+        "--search",
+        nargs="+",
+        help="Search the term and print top results",
+    )
     return parser
 
 
@@ -75,6 +84,49 @@ def split_headers_and_body(response: str) -> tuple[str, str]:
     return "", response
 
 
+def get_status_code(headers: str) -> int:
+    first_line = headers.splitlines()[0] if headers else ""
+    parts = first_line.split()
+    if len(parts) >= 2 and parts[1].isdigit():
+        return int(parts[1])
+    return 0
+
+
+def get_header_value(headers: str, header_name: str) -> str | None:
+    for line in headers.splitlines():
+        if ":" in line:
+            name, value = line.split(":", 1)
+            if name.strip().lower() == header_name.lower():
+                return value.strip()
+    return None
+
+
+def decode_chunked_body(body: str) -> str:
+    decoded = ""
+    rest = body
+
+    while rest:
+        line_end = rest.find("\r\n")
+        if line_end == -1:
+            break
+
+        chunk_size_line = rest[:line_end].strip()
+        rest = rest[line_end + 2:]
+
+        try:
+            chunk_size = int(chunk_size_line, 16)
+        except ValueError:
+            break
+
+        if chunk_size == 0:
+            break
+
+        decoded += rest[:chunk_size]
+        rest = rest[chunk_size + 2:]
+
+    return decoded
+
+
 def html_to_text(html: str) -> str:
     html = re.sub(r"(?is)<script.*?>.*?</script>", "", html)
     html = re.sub(r"(?is)<style.*?>.*?</style>", "", html)
@@ -83,8 +135,33 @@ def html_to_text(html: str) -> str:
     html = re.sub(r"(?i)</div>", "\n", html)
     html = re.sub(r"<[^>]+>", "", html)
     html = unescape(html)
+    html = re.sub(r"\r", "", html)
     html = re.sub(r"\n\s*\n+", "\n\n", html)
     return html.strip()
+
+
+def fetch_url_text(url: str, max_redirects: int = 5) -> str:
+    current_url = url
+
+    for _ in range(max_redirects):
+        response = make_http_request(current_url)
+        headers, body = split_headers_and_body(response)
+        status_code = get_status_code(headers)
+
+        if status_code in (301, 302, 303, 307, 308):
+            location = get_header_value(headers, "Location")
+            if not location:
+                return "Invalid redirect response."
+            current_url = urljoin(current_url, location)
+            continue
+
+        transfer_encoding = get_header_value(headers, "Transfer-Encoding")
+        if transfer_encoding and "chunked" in transfer_encoding.lower():
+            body = decode_chunked_body(body)
+
+        return html_to_text(body)
+
+    return "Too many redirects."
 
 
 def main() -> None:
@@ -92,9 +169,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.url:
-        response = make_http_request(args.url)
-        _, body = split_headers_and_body(response)
-        print(html_to_text(body))
+        try:
+            print(fetch_url_text(args.url))
+        except Exception as error:
+            print(f"Error: {error}")
         return
 
     if args.search:
