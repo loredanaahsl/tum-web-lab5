@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
+import os
 import re
 import socket
 import ssl
 from html import unescape
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
+
+CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache.json")
+REDIRECT_CODES = {301, 302, 303, 307, 308}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +30,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Search the term and print top results",
     )
     return parser
+
+
+def load_cache() -> dict[str, str]:
+    if not os.path.exists(CACHE_FILE):
+        return {}
+
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+            return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_cache(cache: dict[str, str]) -> None:
+    with open(CACHE_FILE, "w", encoding="utf-8") as file:
+        json.dump(cache, file, ensure_ascii=False, indent=2)
 
 
 def parse_url(url: str) -> tuple[str, str, int, str]:
@@ -51,6 +73,8 @@ def make_http_request(url: str) -> str:
         f"GET {path} HTTP/1.1\r\n"
         f"Host: {host}\r\n"
         "User-Agent: go2web/1.0\r\n"
+        "Accept: application/json, text/html\r\n"
+        "Accept-Encoding: identity\r\n"
         "Connection: close\r\n\r\n"
     )
 
@@ -140,33 +164,61 @@ def html_to_text(html: str) -> str:
     return html.strip()
 
 
-def fetch_url_text(url: str, max_redirects: int = 5) -> str:
+def parse_response(raw_response: str) -> str:
+    headers, body = split_headers_and_body(raw_response)
+
+    transfer_encoding = get_header_value(headers, "Transfer-Encoding")
+    if transfer_encoding and "chunked" in transfer_encoding.lower():
+        body = decode_chunked_body(body)
+
+    content_type = get_header_value(headers, "Content-Type") or ""
+    if "application/json" in content_type.lower():
+        try:
+            return json.dumps(json.loads(body), indent=2, ensure_ascii=False)
+        except json.JSONDecodeError:
+            return body.strip()
+
+    return html_to_text(body)
+
+
+def fetch_raw_url(url: str, max_redirects: int = 5) -> str:
+    cache = load_cache()
+    if url in cache:
+        print("[cache hit] serving from cache")
+        return cache[url]
+
+    print("[cache miss] fetching from network")
+    original_url = url
     current_url = url
 
     for _ in range(max_redirects):
         response = make_http_request(current_url)
-        headers, body = split_headers_and_body(response)
+        headers, _ = split_headers_and_body(response)
         status_code = get_status_code(headers)
 
-        if status_code in (301, 302, 303, 307, 308):
+        if status_code in REDIRECT_CODES:
             location = get_header_value(headers, "Location")
             if not location:
-                return "Invalid redirect response."
+                raise RuntimeError("Invalid redirect response.")
             current_url = urljoin(current_url, location)
             continue
 
-        transfer_encoding = get_header_value(headers, "Transfer-Encoding")
-        if transfer_encoding and "chunked" in transfer_encoding.lower():
-            body = decode_chunked_body(body)
+        cache[original_url] = response
+        save_cache(cache)
+        return response
 
-        return html_to_text(body)
+    raise RuntimeError("Too many redirects.")
 
-    return "Too many redirects."
+
+def fetch_url_text(url: str) -> str:
+    raw_response = fetch_raw_url(url)
+    return parse_response(raw_response)
 
 
 def build_search_url(search_terms: list[str]) -> str:
     query = quote_plus(" ".join(search_terms))
     return f"https://html.duckduckgo.com/html/?q={query}"
+
 
 def normalize_search_result_url(url: str) -> str:
     if url.startswith("//"):
@@ -207,8 +259,8 @@ def extract_search_results(html: str, max_results: int = 10) -> list[tuple[str, 
 
 def search_web(search_terms: list[str]) -> list[tuple[str, str]]:
     search_url = build_search_url(search_terms)
-    response = make_http_request(search_url)
-    headers, body = split_headers_and_body(response)
+    raw_response = fetch_raw_url(search_url)
+    headers, body = split_headers_and_body(raw_response)
 
     transfer_encoding = get_header_value(headers, "Transfer-Encoding")
     if transfer_encoding and "chunked" in transfer_encoding.lower():
