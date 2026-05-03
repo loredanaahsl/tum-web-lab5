@@ -5,7 +5,7 @@ import re
 import socket
 import ssl
 from html import unescape
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -164,6 +164,45 @@ def fetch_url_text(url: str, max_redirects: int = 5) -> str:
     return "Too many redirects."
 
 
+def build_search_url(search_terms: list[str]) -> str:
+    query = quote_plus(" ".join(search_terms))
+    return f"https://html.duckduckgo.com/html/?q={query}"
+
+
+def extract_search_results(html: str, max_results: int = 10) -> list[tuple[str, str]]:
+    results: list[tuple[str, str]] = []
+
+    pattern = re.compile(
+        r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="(.*?)"[^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    for match in pattern.finditer(html):
+        url = unescape(match.group(1)).strip()
+        title_html = match.group(2).strip()
+        title = html_to_text(title_html)
+
+        if title and url:
+            results.append((title, url))
+
+        if len(results) == max_results:
+            break
+
+    return results
+
+
+def search_web(search_terms: list[str]) -> list[tuple[str, str]]:
+    search_url = build_search_url(search_terms)
+    response = make_http_request(search_url)
+    headers, body = split_headers_and_body(response)
+
+    transfer_encoding = get_header_value(headers, "Transfer-Encoding")
+    if transfer_encoding and "chunked" in transfer_encoding.lower():
+        body = decode_chunked_body(body)
+
+    return extract_search_results(body)
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -176,7 +215,18 @@ def main() -> None:
         return
 
     if args.search:
-        print(f"Search mode: {' '.join(args.search)}")
+        try:
+            results = search_web(args.search)
+
+            if not results:
+                print("No results found.")
+                return
+
+            for index, (title, url) in enumerate(results, start=1):
+                print(f"{index}. {title}")
+                print(f"   {url}")
+        except Exception as error:
+            print(f"Error: {error}")
         return
 
     parser.print_help()
